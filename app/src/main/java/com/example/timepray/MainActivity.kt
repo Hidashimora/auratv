@@ -156,7 +156,7 @@ class MainActivity : AppCompatActivity() {
 
         // Загружаем ваш сайт
         val device = "AndroidTV"
-        val url = getString(R.string.app_website_url) + "?device=${URLEncoder.encode(device, "UTF-8")}"
+        val url = getString(R.string.app_website_url) //+ "?device=111"//${URLEncoder.encode(device, "UTF-8")}
         webView.loadUrl(url)
     }
 
