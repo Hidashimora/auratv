@@ -22,26 +22,93 @@ import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.provider.Settings
 import android.widget.Toast
 import android.os.Build
 import java.net.URLEncoder
+import android.net.*
+import android.os.Handler
+import android.os.Looper
+import android.view.Gravity
+import android.webkit.WebResourceError
+import android.widget.TextView
+import androidx.core.view.isVisible
 
 
 class MainActivity : AppCompatActivity() {
+    private lateinit var cm: ConnectivityManager
+    private var isOnline = false
+    private var lastUrl = ""
+    private val handler = Handler(Looper.getMainLooper())
 
     private lateinit var webView: WebView
     private lateinit var myChromeClient: WebChromeClient
-
     private var customVideoView: View? = null
     private var originalSystemUiVisibility: Int = 0
+
+    private lateinit var offlineText: TextView
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            updateOnlineState()
+            if (isOnline) reloadWhenOnline()
+        }
+
+        override fun onLost(network: Network) {
+            updateOnlineState()
+            showOffline()
+        }
+
+        override fun onCapabilitiesChanged(network: Network, nc: NetworkCapabilities) {
+            updateOnlineState()
+            if (isOnline) reloadWhenOnline() else showOffline()
+        }
+    }
+
+    private fun updateOnlineState() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val an = cm.activeNetwork
+            val caps = an?.let { cm.getNetworkCapabilities(it) }
+            // На ряде Android TV VALIDATED может не выставляться стабильно, даже при доступном интернете.
+            // Для UI-состояния считаем онлайн по наличию INTERNET у активной сети.
+            isOnline = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        } else {
+            @Suppress("DEPRECATION")
+            val ni = cm.activeNetworkInfo
+            isOnline = ni != null && ni.isConnected
+        }
+
+        runOnUiThread {
+            if (isOnline) hideOffline() else showOffline()
+        }
+    }
+
+
+    private var reloadPending = false
+    private fun reloadWhenOnline() {
+        if (reloadPending) return
+        reloadPending = true
+        handler.postDelayed({
+            if (isOnline) {
+                if (lastUrl.isNotBlank()) webView.loadUrl(lastUrl)
+                else webView.reload()
+            }
+            reloadPending = false
+        }, 800)
+    }
+
+
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
+
+        cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         webView = findViewById(R.id.web)
         webView.isFocusable = true
@@ -65,19 +132,59 @@ class MainActivity : AppCompatActivity() {
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
+        offlineText = TextView(this).apply {
+            text = "Нет подключения к интернету\nОжидание сети..."
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setBackgroundColor(0xCC000000.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            isVisible = false
+        }
+        (webView.parent as? FrameLayout)?.addView(
+            offlineText,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
+                lastUrl = url
                 view?.loadUrl(url)
                 return true
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                // TODO: показать индикатор загрузки при желании
+                url?.let { lastUrl = it }
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                hideOffline()
+                url?.let { lastUrl = it }
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                // Не реагируем на ошибки вторичных ресурсов (js/css/img) как на "нет интернета".
+                if (request?.isForMainFrame != true) return
+
+                val code = error?.errorCode
+                val isConnectivityError = code == ERROR_HOST_LOOKUP ||
+                        code == ERROR_CONNECT ||
+                        code == ERROR_TIMEOUT ||
+                        code == ERROR_IO
+
+                if (isConnectivityError || !isOnline) {
+                    showOffline()
+                }
             }
 
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                // В проде корректно обрабатывайте SSL (не вызывайте handler?.proceed() без проверки)
                 super.onReceivedSslError(view, handler, error)
             }
         }
@@ -154,10 +261,35 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Загружаем сайт
+        lastUrl = getString(R.string.app_website_url)
+        updateOnlineState()
+        if (isOnline) webView.loadUrl(lastUrl) else showOffline()
         // Загружаем ваш сайт
-        val device = "AndroidTV"
-        val url = getString(R.string.app_website_url) //+ "?device=111"//${URLEncoder.encode(device, "UTF-8")}
-        webView.loadUrl(url)
+//        val device = "AndroidTV"
+//        val url = getString(R.string.app_website_url) //+ "?device=111"//${URLEncoder.encode(device, "UTF-8")}
+//        webView.loadUrl(url)
+    }
+    private fun showOffline() {
+        runOnUiThread { offlineText.isVisible = true }
+    }
+
+    private fun hideOffline() {
+        runOnUiThread { offlineText.isVisible = false }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val req = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+        cm.registerNetworkCallback(req, networkCallback)
+        updateOnlineState()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try { cm.unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
     }
 
     // На случай, если где-то нужно гарантировано нормализовать URL
