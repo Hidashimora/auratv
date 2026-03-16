@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_website_url">http://mosque-kit.ru/board</string>
+    <string name="app_website_urll">http://mosque-kit.ru/board</string>
+    <string name="app_website_url">https://izhevskaya-mechet.ru/qr/</string>
     <string name="tv_name">TV1</string>
 </resources>
