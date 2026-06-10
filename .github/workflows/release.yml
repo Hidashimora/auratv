@@ -1,0 +1,40 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build APK
+        run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare version.json
+        run: |
+          VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts)
+          VERSION_NAME=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
+          echo "{\"versionCode\": $VERSION_CODE, \"versionName\": \"$VERSION_NAME\"}" > version.json
+          cp version.json release/version.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            app/build/outputs/apk/debug/app-debug.apk
+            version.json
+          generate_release_notes: true

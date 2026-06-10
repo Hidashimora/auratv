@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_website_urll">http://mosque-kit.ru/board</string>
-    <string name="app_website_url">https://izhevskaya-mechet.ru/qr/</string>
+    <string name="app_website_url">https://shundi25.ru/</string>
+    <string name="app_website_urll">https://izhevskaya-mechet.ru/qr/</string>
     <string name="tv_name">TV1</string>
+
+    <!-- GitHub Releases для автообновления -->
+    <string name="update_github_owner">Hidashimora</string>
+    <string name="update_github_repo">auratv</string>
 </resources>

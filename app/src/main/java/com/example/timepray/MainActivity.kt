@@ -28,28 +28,47 @@ import android.net.ConnectivityManager
 import android.provider.Settings
 import android.widget.Toast
 import android.os.Build
-import java.net.URLEncoder
 import android.net.*
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.webkit.WebResourceError
 import android.widget.TextView
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
+import com.example.timepray.update.ApkUpdateManager
+import com.example.timepray.BuildConfig
 
 
 class MainActivity : AppCompatActivity() {
+    companion object {
+        private const val PREFS_NAME = "timepray_prefs"
+        private const val KEY_LAST_URL = "last_success_url"
+        private const val KEY_LAST_UPDATE_CHECK = "last_update_check_ms"
+        private const val UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
+        private const val UPDATE_START_DELAY_MS = 10_000L
+    }
+
     private lateinit var cm: ConnectivityManager
     private var isOnline = false
     private var lastUrl = ""
     private val handler = Handler(Looper.getMainLooper())
+    private val prefs by lazy { getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
 
     private lateinit var webView: WebView
     private lateinit var myChromeClient: WebChromeClient
     private var customVideoView: View? = null
-    private var originalSystemUiVisibility: Int = 0
 
     private lateinit var offlineText: TextView
+    private lateinit var wifiMenuOverlay: FrameLayout
+    private lateinit var wifiMenuText: TextView
+    private var wifiMenuVisible = false
+
+    private lateinit var apkUpdateManager: ApkUpdateManager
+    private lateinit var updateOverlay: FrameLayout
+    private lateinit var updateOverlayText: TextView
+    private var updateOverlayVisible = false
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -59,12 +78,12 @@ class MainActivity : AppCompatActivity() {
 
         override fun onLost(network: Network) {
             updateOnlineState()
-            showOffline()
+            loadCachedLastPage()
         }
 
         override fun onCapabilitiesChanged(network: Network, nc: NetworkCapabilities) {
             updateOnlineState()
-            if (isOnline) reloadWhenOnline() else showOffline()
+            if (isOnline) reloadWhenOnline() else loadCachedLastPage()
         }
     }
 
@@ -76,13 +95,12 @@ class MainActivity : AppCompatActivity() {
             // Для UI-состояния считаем онлайн по наличию INTERNET у активной сети.
             isOnline = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
         } else {
-            @Suppress("DEPRECATION")
-            val ni = cm.activeNetworkInfo
-            isOnline = ni != null && ni.isConnected
+            isOnline = isLegacyNetworkConnected()
         }
 
         runOnUiThread {
             if (isOnline) hideOffline() else showOffline()
+            if (wifiMenuVisible) updateWifiMenuText()
         }
     }
 
@@ -93,6 +111,7 @@ class MainActivity : AppCompatActivity() {
         reloadPending = true
         handler.postDelayed({
             if (isOnline) {
+                webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
                 if (lastUrl.isNotBlank()) webView.loadUrl(lastUrl)
                 else webView.reload()
             }
@@ -118,7 +137,6 @@ class MainActivity : AppCompatActivity() {
         with(webView.settings) {
             javaScriptEnabled = true
             domStorageEnabled = true
-            databaseEnabled = true
             mediaPlaybackRequiresUserGesture = false
             loadWithOverviewMode = true
             useWideViewPort = true
@@ -140,7 +158,8 @@ class MainActivity : AppCompatActivity() {
             setTextColor(0xFFFFFFFF.toInt())
             isVisible = false
         }
-        (webView.parent as? FrameLayout)?.addView(
+        val rootContainer = webView.parent as? FrameLayout
+        rootContainer?.addView(
             offlineText,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -148,21 +167,81 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
+        wifiMenuText = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 20f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(48, 48, 48, 48)
+        }
+        wifiMenuOverlay = FrameLayout(this).apply {
+            setBackgroundColor(0xE6000000.toInt())
+            isVisible = false
+            isFocusable = true
+            isFocusableInTouchMode = true
+            addView(
+                wifiMenuText,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        rootContainer?.addView(
+            wifiMenuOverlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        updateOverlayText = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 20f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(48, 48, 48, 48)
+        }
+        updateOverlay = FrameLayout(this).apply {
+            setBackgroundColor(0xE6000000.toInt())
+            isVisible = false
+            addView(
+                updateOverlayText,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        rootContainer?.addView(
+            updateOverlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        apkUpdateManager = ApkUpdateManager(
+            this,
+            getString(R.string.update_github_owner),
+            getString(R.string.update_github_repo),
+            BuildConfig.VERSION_CODE
+        )
+        scheduleUpdateCheck()
+
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
-                lastUrl = url
                 view?.loadUrl(url)
                 return true
             }
 
-            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                url?.let { lastUrl = it }
-            }
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) = Unit
 
             override fun onPageFinished(view: WebView?, url: String?) {
-                hideOffline()
-                url?.let { lastUrl = it }
+                if (isOnline) hideOffline() else showOffline()
+                url?.let {
+                    lastUrl = it
+                    saveLastSuccessfulUrl(it)
+                }
             }
 
             override fun onReceivedError(
@@ -180,7 +259,11 @@ class MainActivity : AppCompatActivity() {
                         code == ERROR_IO
 
                 if (isConnectivityError || !isOnline) {
+                    val failedUrl = request?.url?.toString()
                     showOffline()
+                    if (!lastUrl.isNullOrBlank() && failedUrl != lastUrl) {
+                        loadCachedLastPage()
+                    }
                 }
             }
 
@@ -197,7 +280,6 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
                 customVideoView = view
-                originalSystemUiVisibility = window.decorView.systemUiVisibility
 
                 val container = webView.parent as? FrameLayout
                 container?.addView(view, FrameLayout.LayoutParams(
@@ -205,12 +287,7 @@ class MainActivity : AppCompatActivity() {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 ))
                 webView.visibility = View.GONE
-
-                // Иммерсив для видео
-                window.decorView.systemUiVisibility =
-                    (View.SYSTEM_UI_FLAG_FULLSCREEN
-                            or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
+                setImmersiveMode(true)
             }
 
             override fun onHideCustomView() {
@@ -220,7 +297,7 @@ class MainActivity : AppCompatActivity() {
                     customVideoView = null
                 }
                 webView.visibility = View.VISIBLE
-                window.decorView.systemUiVisibility = originalSystemUiVisibility
+                setImmersiveMode(false)
             }
 
             override fun onPermissionRequest(request: PermissionRequest?) {
@@ -233,7 +310,9 @@ class MainActivity : AppCompatActivity() {
         // Обработка "Назад": либо выходим из фулл-скрина, либо назад в истории, либо закрываем
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (customVideoView != null) {
+                if (wifiMenuVisible) {
+                    hideWifiMenu()
+                } else if (customVideoView != null) {
                     // НЕ вызываем webView.webChromeClient?.onHideCustomView() — это и ломало сборку на API<26
                     myChromeClient.onHideCustomView()
                 } else if (webView.canGoBack()) {
@@ -244,15 +323,10 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        // D-pad прокрутка
+        // D-pad прокрутка (OK/Enter обрабатываются в dispatchKeyEvent)
         webView.setOnKeyListener { _, keyCode, event ->
-            if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+            if (event.action != KeyEvent.ACTION_DOWN || wifiMenuVisible) return@setOnKeyListener false
             when (keyCode) {
-                KeyEvent.KEYCODE_DPAD_CENTER,
-                KeyEvent.KEYCODE_ENTER -> {
-                    openWifiSettings()
-                    true
-                }
                 KeyEvent.KEYCODE_DPAD_DOWN -> { webView.pageDown(true); true }
                 KeyEvent.KEYCODE_DPAD_UP -> { webView.pageUp(true); true }
                 KeyEvent.KEYCODE_DPAD_LEFT -> { webView.scrollBy(-200, 0); true }
@@ -262,20 +336,58 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Загружаем сайт
-        lastUrl = getString(R.string.app_website_url)
+        lastUrl = prefs.getString(KEY_LAST_URL, null)?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.app_website_url)
         updateOnlineState()
-        if (isOnline) webView.loadUrl(lastUrl) else showOffline()
+        if (isOnline) {
+            webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
+            webView.loadUrl(lastUrl)
+        } else {
+            loadCachedLastPage()
+        }
         // Загружаем ваш сайт
 //        val device = "AndroidTV"
 //        val url = getString(R.string.app_website_url) //+ "?device=111"//${URLEncoder.encode(device, "UTF-8")}
 //        webView.loadUrl(url)
     }
+    @Suppress("DEPRECATION")
+    private fun isLegacyNetworkConnected(): Boolean {
+        val ni = cm.activeNetworkInfo
+        return ni != null && ni.isConnected
+    }
+
+    private fun setImmersiveMode(enabled: Boolean) {
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        if (enabled) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     private fun showOffline() {
         runOnUiThread { offlineText.isVisible = true }
     }
 
     private fun hideOffline() {
         runOnUiThread { offlineText.isVisible = false }
+    }
+
+    private fun saveLastSuccessfulUrl(url: String) {
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            prefs.edit().putString(KEY_LAST_URL, url).apply()
+        }
+    }
+
+    private fun loadCachedLastPage() {
+        runOnUiThread {
+            val targetUrl = if (lastUrl.isNotBlank()) lastUrl else getString(R.string.app_website_url)
+            webView.settings.cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
+            webView.loadUrl(targetUrl)
+            showOffline()
+        }
     }
 
     override fun onStart() {
@@ -297,6 +409,46 @@ class MainActivity : AppCompatActivity() {
         val uri = Uri.parse(url)
         loadUrl(uri.toString())
     }
+    private fun updateWifiMenuText() {
+        val status = if (isOnline) "Подключено к интернету" else "Нет подключения к интернету"
+        wifiMenuText.text = buildString {
+            appendLine("Управление Wi‑Fi")
+            appendLine()
+            appendLine(status)
+            appendLine()
+            appendLine("Ctrl+Q / OK — открыть настройки сети")
+            append("Esc / Назад — закрыть")
+        }
+    }
+
+    private fun showWifiMenu() {
+        if (wifiMenuVisible) return
+        wifiMenuVisible = true
+        updateWifiMenuText()
+        wifiMenuOverlay.isVisible = true
+        wifiMenuOverlay.requestFocus()
+        openWifiSettings()
+    }
+
+    private fun hideWifiMenu() {
+        if (!wifiMenuVisible) return
+        wifiMenuVisible = false
+        wifiMenuOverlay.isVisible = false
+        webView.requestFocus()
+    }
+
+    private fun isConfirmKey(keyCode: Int): Boolean {
+        return keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                keyCode == KeyEvent.KEYCODE_ENTER ||
+                keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_A
+    }
+
+    private fun isCloseKey(keyCode: Int): Boolean {
+        return keyCode == KeyEvent.KEYCODE_ESCAPE ||
+                keyCode == KeyEvent.KEYCODE_BACK
+    }
+
     private fun openWifiSettings() {
         try {
             // Для Android 10+ (API 29): панель подключения не выходя из приложения
@@ -320,19 +472,100 @@ class MainActivity : AppCompatActivity() {
 
         Toast.makeText(this, "Не удалось открыть настройки сети на этом устройстве", Toast.LENGTH_SHORT).show()
     }
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_DPAD_CENTER,   // OK на пульте
-                KeyEvent.KEYCODE_ENTER,         // Enter на клавиатуре/некоторых пультах
-                KeyEvent.KEYCODE_NUMPAD_ENTER,  // Enter на numpad
-                KeyEvent.KEYCODE_BUTTON_A       // «A» на геймпадах (часто = подтверждение)
-                    -> {
-                    openWifiSettings()
-                    return true // поглощаем событие, чтобы WebView не «кликал» по ссылкам
+
+    private fun isUpdateConfigured(): Boolean {
+        val owner = getString(R.string.update_github_owner)
+        return owner.isNotBlank() && !owner.startsWith("YOUR_")
+    }
+
+    private fun scheduleUpdateCheck() {
+        if (!isUpdateConfigured() || !isOnline) return
+
+        val lastCheck = prefs.getLong(KEY_LAST_UPDATE_CHECK, 0L)
+        val now = System.currentTimeMillis()
+        if (now - lastCheck < UPDATE_CHECK_INTERVAL_MS) return
+
+        handler.postDelayed({ checkForAppUpdate() }, UPDATE_START_DELAY_MS)
+    }
+
+    private fun checkForAppUpdate() {
+        if (!isUpdateConfigured() || !isOnline || updateOverlayVisible) return
+
+        if (!apkUpdateManager.canInstallPackages()) {
+            apkUpdateManager.createInstallPermissionIntent()?.let { startActivity(it) }
+            Toast.makeText(
+                this,
+                "Разрешите установку приложений для автообновления",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+
+        prefs.edit().putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis()).apply()
+        showUpdateOverlay("Проверка обновлений...")
+
+        apkUpdateManager.checkAndInstall(
+            onStatus = { status ->
+                runOnUiThread {
+                    updateOverlayText.text = status
+                    if (status == "Установлена актуальная версия") {
+                        handler.postDelayed({ hideUpdateOverlay() }, 2000)
+                    }
+                }
+            },
+            onProgress = { progress ->
+                runOnUiThread { updateOverlayText.text = "Загрузка обновления...\n$progress%" }
+            },
+            onError = { error ->
+                runOnUiThread {
+                    updateOverlayText.text = error
+                    handler.postDelayed({ hideUpdateOverlay() }, 3000)
+                }
+            },
+            onInstallStarted = {
+                runOnUiThread {
+                    updateOverlayText.text = "Подтвердите установку на экране"
                 }
             }
+        )
+    }
+
+    private fun showUpdateOverlay(text: String) {
+        updateOverlayVisible = true
+        updateOverlayText.text = text
+        updateOverlay.isVisible = true
+    }
+
+    private fun hideUpdateOverlay() {
+        updateOverlayVisible = false
+        updateOverlay.isVisible = false
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
+
+        if (isCloseKey(event.keyCode)) {
+            if (wifiMenuVisible) {
+                hideWifiMenu()
+                return true
+            }
+            return super.dispatchKeyEvent(event)
         }
+
+        if (event.keyCode == KeyEvent.KEYCODE_Q && event.isCtrlPressed) {
+            showWifiMenu()
+            return true
+        }
+
+        if (isConfirmKey(event.keyCode)) {
+            if (wifiMenuVisible) {
+                openWifiSettings()
+            } else {
+                showWifiMenu()
+            }
+            return true
+        }
+
         return super.dispatchKeyEvent(event)
     }
 
