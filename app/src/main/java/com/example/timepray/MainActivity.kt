@@ -73,32 +73,6 @@ class MainActivity : AppCompatActivity() {
                     main.style.height = h + 'px';
                     main.style.minHeight = h + 'px';
                 }
-                if (!document.getElementById('aura-qr-fix')) {
-                    var style = document.createElement('style');
-                    style.id = 'aura-qr-fix';
-                    style.textContent = '#qr, #qr:focus, img#qr { outline: none !important; box-shadow: none !important; -webkit-tap-highlight-color: transparent !important; border-radius: 0 !important; background: #fff !important; }';
-                    document.head.appendChild(style);
-                }
-                var el = document.querySelector('#qr');
-                if (!el) return;
-                el.setAttribute('tabindex', '-1');
-                el.style.outline = 'none';
-                el.style.boxShadow = 'none';
-                el.style.borderRadius = '0';
-                el.style.background = '#fff';
-                if (!window.QRious) return;
-                var key = el.qrious && el.qrious.value;
-                if (!key) return;
-                if (el.tagName === 'CANVAS' && el.qrious && el.qrious.value === key) return;
-                var size = 240;
-                var canvas = document.createElement('canvas');
-                canvas.id = 'qr';
-                canvas.setAttribute('tabindex', '-1');
-                canvas.style.cssText = 'height:60vmin;width:60vmin;margin:0 auto;display:block;border-radius:0;background:#fff;outline:none;box-shadow:none;';
-                canvas.width = size;
-                canvas.height = size;
-                el.parentNode.replaceChild(canvas, el);
-                new QRious({ element: canvas, value: key, background: '#FFFFFF', foreground: '#000000', size: size });
             })();
         """
         private val PAGE_FIX_DELAYS_MS = longArrayOf(300L, 1000L, 2000L, 4000L)
@@ -131,7 +105,7 @@ class MainActivity : AppCompatActivity() {
     private var settingsTimeEditing = false
     private var mainFrameHttpErrorRetried = false
 
-    private enum class SettingsMenuItem { WIFI, UPDATE, AUTO_UPDATE, AUTO_UPDATE_TIME }
+    private enum class SettingsMenuItem { WIFI, UPDATE, AUTO_UPDATE, AUTO_UPDATE_TIME, WEBVIEW_UPDATE }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -643,6 +617,7 @@ class MainActivity : AppCompatActivity() {
         if (UpdatePreferences.isAutoUpdateEnabled(this)) {
             items.add(SettingsMenuItem.AUTO_UPDATE_TIME)
         }
+        items.add(SettingsMenuItem.WEBVIEW_UPDATE)
         return items
     }
 
@@ -669,6 +644,10 @@ class MainActivity : AppCompatActivity() {
         } else {
             "Время: ${UpdatePreferences.formatCheckTime(this)}"
         }
+        val webViewLine = getString(
+            R.string.webview_menu_line,
+            WebViewSupport.describeCurrentProvider(this)
+        )
 
         settingsMenuText.text = buildString {
             appendLine("Меню")
@@ -679,6 +658,7 @@ class MainActivity : AppCompatActivity() {
             if (autoEnabled) {
                 appendLine(menuLine(SettingsMenuItem.AUTO_UPDATE_TIME, timeLabel))
             }
+            appendLine(menuLine(SettingsMenuItem.WEBVIEW_UPDATE, webViewLine))
             appendLine()
             append(
                 if (settingsTimeEditing) {
@@ -763,6 +743,10 @@ class MainActivity : AppCompatActivity() {
             SettingsMenuItem.AUTO_UPDATE_TIME -> {
                 settingsTimeEditing = true
                 updateSettingsMenuText()
+            }
+            SettingsMenuItem.WEBVIEW_UPDATE -> {
+                hideSettingsMenu()
+                WebViewSupport.openUpdater(this)
             }
         }
     }
