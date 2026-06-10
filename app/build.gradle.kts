@@ -19,8 +19,8 @@ android {
         applicationId = "com.example.timepray"
         minSdk = 21
         targetSdk = 36
-        versionCode = 13
-        versionName = "1.4.8"
+        versionCode = 14
+        versionName = "1.4.9"
 
     }
 
