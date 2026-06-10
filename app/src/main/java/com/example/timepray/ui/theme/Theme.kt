@@ -9,7 +9,7 @@ import androidx.tv.material3.lightColorScheme
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-fun TimePrayTheme(
+fun AuraTheme(
     isInDarkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {

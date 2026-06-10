@@ -81,7 +81,7 @@ class ApkUpdateManager(
             requestMethod = "GET"
             connectTimeout = 15_000
             readTimeout = 120_000
-            setRequestProperty("User-Agent", "TimePray-Updater")
+            setRequestProperty("User-Agent", "Aura-Updater")
         }
 
         return try {

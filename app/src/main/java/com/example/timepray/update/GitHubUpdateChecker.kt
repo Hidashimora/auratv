@@ -7,7 +7,7 @@ import java.net.URL
 
 object GitHubUpdateChecker {
 
-    private const val USER_AGENT = "TimePray-Updater"
+    private const val USER_AGENT = "Aura-Updater"
 
     fun fetchLatestUpdate(owner: String, repo: String): UpdateInfo? {
         if (owner.isBlank() || repo.isBlank()) return null

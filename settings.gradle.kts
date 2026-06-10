@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TimePray"
+rootProject.name = "Aura"
 include(":app")

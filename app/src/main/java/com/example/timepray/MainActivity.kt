@@ -50,7 +50,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_FORCE_UPDATE_CHECK = "com.example.timepray.extra.FORCE_UPDATE_CHECK"
 
-        private const val PREFS_NAME = "timepray_prefs"
+        private const val PREFS_NAME = "aura_prefs"
         private const val KEY_LAST_URL = "last_success_url"
         private const val KEY_LAST_UPDATE_CHECK_DAY = "last_update_check_day"
         private const val OFFLINE_MESSAGE = "Нет подключения к интернету\nОжидание сети..."

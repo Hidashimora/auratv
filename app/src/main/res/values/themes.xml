@@ -1,4 +1,4 @@
 <resources>
 
-    <style name="Theme.TimePray" parent="Theme.AppCompat.DayNight.NoActionBar" />
+    <style name="Theme.Aura" parent="Theme.AppCompat.DayNight.NoActionBar" />
 </resources>

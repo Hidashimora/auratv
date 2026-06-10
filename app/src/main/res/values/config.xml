@@ -1,10 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_website_url">https://shundi25.ru/</string>
-    <!-- Desktop Chrome UA: сервер shundi25.ru отдаёт 500 для «пустого» User-Agent -->
     <string name="app_webview_user_agent">Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36</string>
-    <string name="app_website_urll">https://izhevskaya-mechet.ru/qr/</string>
-    <string name="tv_name">TV1</string>
 
     <!-- GitHub Releases для автообновления -->
     <string name="update_github_owner">Hidashimora</string>
