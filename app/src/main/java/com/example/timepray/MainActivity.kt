@@ -3,7 +3,6 @@ package com.example.timepray
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
-import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
@@ -40,10 +39,11 @@ import android.widget.TextView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import com.example.timepray.update.ApkUpdateManager
 import com.example.timepray.update.UpdatePreferences
 import com.example.timepray.update.UpdateScheduler
-import com.example.timepray.BuildConfig
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -58,6 +58,7 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_LAST_UPDATE_CHECK_DAY = "last_update_check_day"
         private const val KEY_LOADED_VERSION_CODE = "loaded_version_code"
         private const val OFFLINE_MESSAGE = "Нет подключения к интернету\nОжидание сети..."
+        @Suppress("SpellCheckingInspection")
         private const val PAGE_FIX_JS = """
             (function() {
                 if (navigator.serviceWorker) {
@@ -72,6 +73,32 @@ class MainActivity : AppCompatActivity() {
                     main.style.height = h + 'px';
                     main.style.minHeight = h + 'px';
                 }
+                if (!document.getElementById('aura-qr-fix')) {
+                    var style = document.createElement('style');
+                    style.id = 'aura-qr-fix';
+                    style.textContent = '#qr, #qr:focus, img#qr { outline: none !important; box-shadow: none !important; -webkit-tap-highlight-color: transparent !important; border-radius: 0 !important; background: #fff !important; }';
+                    document.head.appendChild(style);
+                }
+                var el = document.querySelector('#qr');
+                if (!el) return;
+                el.setAttribute('tabindex', '-1');
+                el.style.outline = 'none';
+                el.style.boxShadow = 'none';
+                el.style.borderRadius = '0';
+                el.style.background = '#fff';
+                if (!window.QRious) return;
+                var key = el.qrious && el.qrious.value;
+                if (!key) return;
+                if (el.tagName === 'CANVAS' && el.qrious && el.qrious.value === key) return;
+                var size = 240;
+                var canvas = document.createElement('canvas');
+                canvas.id = 'qr';
+                canvas.setAttribute('tabindex', '-1');
+                canvas.style.cssText = 'height:60vmin;width:60vmin;margin:0 auto;display:block;border-radius:0;background:#fff;outline:none;box-shadow:none;';
+                canvas.width = size;
+                canvas.height = size;
+                el.parentNode.replaceChild(canvas, el);
+                new QRious({ element: canvas, value: key, background: '#FFFFFF', foreground: '#000000', size: size });
             })();
         """
         private val PAGE_FIX_DELAYS_MS = longArrayOf(300L, 1000L, 2000L, 4000L)
@@ -188,6 +215,8 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 safeBrowsingEnabled = false
             }
+            @Suppress("DEPRECATION")
+            setNeedInitialFocus(false)
         }
         webView.setBackgroundColor(0xFF0c192a.toInt())
         webView.clearCache(true)
@@ -359,29 +388,25 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?,
                 error: WebResourceError?
             ) {
-                // Не реагируем на ошибки вторичных ресурсов (js/css/img) как на "нет интернета".
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
                 if (request?.isForMainFrame != true) return
-
-                val code = error?.errorCode
-                val isConnectivityError = code == ERROR_HOST_LOOKUP ||
-                        code == ERROR_CONNECT ||
-                        code == ERROR_TIMEOUT ||
-                        code == ERROR_IO
-
-                if (isConnectivityError || !isOnline) {
-                    val failedUrl = request.url?.toString()
-                    showOffline()
-                    if (!lastUrl.isNullOrBlank() && failedUrl != lastUrl) {
-                        loadCachedLastPage()
-                    }
-                } else {
-                    runOnUiThread {
-                        showPageError("Не удалось загрузить страницу (код $code)")
-                    }
-                }
+                handleMainFrameLoadError(error?.errorCode ?: return, request.url?.toString())
             }
 
+            @Suppress("DEPRECATION")
+            override fun onReceivedError(
+                view: WebView?,
+                errorCode: Int,
+                description: String?,
+                failingUrl: String?
+            ) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) return
+                handleMainFrameLoadError(errorCode, failingUrl)
+            }
+
+            @SuppressLint("WebViewClientOnReceivedSslError")
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
+                // Сайты на ТВ иногда с самоподписанными сертификатами; без proceed страница не откроется.
                 handler?.proceed()
             }
         }
@@ -421,20 +446,18 @@ class MainActivity : AppCompatActivity() {
         }
         webView.webChromeClient = myChromeClient
 
-        // Обработка "Назад": либо выходим из фулл-скрина, либо назад в истории, либо закрываем
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (settingsMenuVisible) {
-                    hideSettingsMenu()
-                } else if (wifiMenuVisible) {
-                    hideWifiMenu()
-                } else if (customVideoView != null) {
-                    // НЕ вызываем webView.webChromeClient?.onHideCustomView() — это и ломало сборку на API<26
-                    myChromeClient.onHideCustomView()
-                } else if (webView.canGoBack()) {
-                    webView.goBack()
-                } else {
-                    finish()
+                when {
+                    settingsMenuVisible && settingsTimeEditing -> {
+                        settingsTimeEditing = false
+                        updateSettingsMenuText()
+                    }
+                    settingsMenuVisible -> hideSettingsMenu()
+                    wifiMenuVisible -> hideWifiMenu()
+                    customVideoView != null -> myChromeClient.onHideCustomView()
+                    webView.canGoBack() -> webView.goBack()
+                    else -> finish()
                 }
             }
         })
@@ -452,9 +475,27 @@ class MainActivity : AppCompatActivity() {
 
     private fun isSameSiteAsHome(url: String): Boolean {
         return try {
-            Uri.parse(url).host.equals(Uri.parse(homeUrl()).host, ignoreCase = true)
+            url.toUri().host.equals(homeUrl().toUri().host, ignoreCase = true)
         } catch (_: Exception) {
             false
+        }
+    }
+
+    private fun handleMainFrameLoadError(code: Int, failedUrl: String?) {
+        val isConnectivityError = code == WebViewClient.ERROR_HOST_LOOKUP ||
+                code == WebViewClient.ERROR_CONNECT ||
+                code == WebViewClient.ERROR_TIMEOUT ||
+                code == WebViewClient.ERROR_IO
+
+        if (isConnectivityError || !isOnline) {
+            showOffline()
+            if (lastUrl.isNotBlank() && failedUrl != lastUrl) {
+                loadCachedLastPage()
+            }
+        } else {
+            runOnUiThread {
+                showPageError(getString(R.string.page_load_error, code))
+            }
         }
     }
 
@@ -476,7 +517,7 @@ class MainActivity : AppCompatActivity() {
     private fun shouldBypassCacheForLoad(): Boolean {
         val loadedVersion = prefs.getInt(KEY_LOADED_VERSION_CODE, -1)
         if (loadedVersion == BuildConfig.VERSION_CODE) return false
-        prefs.edit().putInt(KEY_LOADED_VERSION_CODE, BuildConfig.VERSION_CODE).apply()
+        prefs.edit { putInt(KEY_LOADED_VERSION_CODE, BuildConfig.VERSION_CODE) }
         return true
     }
 
@@ -533,7 +574,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun saveLastSuccessfulUrl(url: String) {
         if (url.startsWith("http://") || url.startsWith("https://")) {
-            prefs.edit().putString(KEY_LAST_URL, url).apply()
+            prefs.edit { putString(KEY_LAST_URL, url) }
         }
     }
 
@@ -565,11 +606,6 @@ class MainActivity : AppCompatActivity() {
         try { cm.unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
     }
 
-    // На случай, если где-то нужно гарантировано нормализовать URL
-    private fun WebView.loadUrlSafe(url: String) {
-        val uri = Uri.parse(url)
-        loadUrl(uri.toString())
-    }
     private fun updateWifiMenuText() {
         val status = if (isOnline) "Подключено к интернету" else "Нет подключения к интернету"
         wifiMenuText.text = buildString {
@@ -721,7 +757,7 @@ class MainActivity : AppCompatActivity() {
             }
             SettingsMenuItem.UPDATE -> {
                 hideSettingsMenu()
-                checkForAppUpdate(force = true)
+                checkForAppUpdate()
             }
             SettingsMenuItem.AUTO_UPDATE -> toggleAutoUpdate()
             SettingsMenuItem.AUTO_UPDATE_TIME -> {
@@ -740,11 +776,6 @@ class MainActivity : AppCompatActivity() {
                 keyCode == KeyEvent.KEYCODE_ENTER ||
                 keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
                 keyCode == KeyEvent.KEYCODE_BUTTON_A
-    }
-
-    private fun isCloseKey(keyCode: Int): Boolean {
-        return keyCode == KeyEvent.KEYCODE_ESCAPE ||
-                keyCode == KeyEvent.KEYCODE_BACK
     }
 
     private fun openWifiSettings() {
@@ -779,22 +810,18 @@ class MainActivity : AppCompatActivity() {
     private fun todayKey(): String =
         SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
-    private fun wasUpdateCheckedToday(): Boolean =
-        prefs.getString(KEY_LAST_UPDATE_CHECK_DAY, "") == todayKey()
-
     private fun markUpdateCheckedToday() {
-        prefs.edit().putString(KEY_LAST_UPDATE_CHECK_DAY, todayKey()).apply()
+        prefs.edit { putString(KEY_LAST_UPDATE_CHECK_DAY, todayKey()) }
     }
 
     private fun handleUpdateCheckIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_FORCE_UPDATE_CHECK, false) == true) {
-            handler.post { checkForAppUpdate(force = true) }
+            handler.post { checkForAppUpdate() }
         }
     }
 
-    private fun checkForAppUpdate(force: Boolean = false) {
+    private fun checkForAppUpdate() {
         if (!isUpdateConfigured() || !isOnline || updateOverlayVisible) return
-        if (!force && wasUpdateCheckedToday()) return
 
         if (!apkUpdateManager.canInstallPackages()) {
             apkUpdateManager.createInstallPermissionIntent()?.let { startActivity(it) }
@@ -807,7 +834,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         markUpdateCheckedToday()
-        showUpdateOverlay("Проверка обновлений...")
+        showUpdateOverlay(getString(R.string.update_check_in_progress))
 
         apkUpdateManager.checkAndInstall(
             onStatus = { status ->
@@ -877,7 +904,7 @@ class MainActivity : AppCompatActivity() {
                         saveAutoUpdateTime()
                         return true
                     }
-                    KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                    KeyEvent.KEYCODE_ESCAPE -> {
                         settingsTimeEditing = false
                         updateSettingsMenuText()
                         return true
@@ -902,24 +929,12 @@ class MainActivity : AppCompatActivity() {
                         activateSettingsMenuSelection()
                         return true
                     }
-                    KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                    KeyEvent.KEYCODE_ESCAPE -> {
                         hideSettingsMenu()
                         return true
                     }
                 }
             }
-        }
-
-        if (isCloseKey(event.keyCode)) {
-            if (settingsMenuVisible) {
-                hideSettingsMenu()
-                return true
-            }
-            if (wifiMenuVisible) {
-                hideWifiMenu()
-                return true
-            }
-            return super.dispatchKeyEvent(event)
         }
 
         if (isSettingsKey(event.keyCode)) {
@@ -933,7 +948,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (event.keyCode == KeyEvent.KEYCODE_W && event.isCtrlPressed) {
-            checkForAppUpdate(force = true)
+            checkForAppUpdate()
             return true
         }
 

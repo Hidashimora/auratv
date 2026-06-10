@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Aura</string>
+    <string name="page_load_error">Не удалось загрузить страницу (код %1$d)</string>
+    <string name="update_check_in_progress">Проверка обновлений…</string>
 </resources>
