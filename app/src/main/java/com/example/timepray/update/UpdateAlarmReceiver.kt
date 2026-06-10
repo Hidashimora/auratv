@@ -7,7 +7,8 @@ import com.example.timepray.MainActivity
 
 class UpdateAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        UpdateScheduler.scheduleDailyMidnightCheck(context)
+        UpdateScheduler.applyFromPrefs(context)
+        if (!UpdatePreferences.isAutoUpdateEnabled(context)) return
 
         val launchIntent = Intent(context, MainActivity::class.java).apply {
             putExtra(MainActivity.EXTRA_FORCE_UPDATE_CHECK, true)

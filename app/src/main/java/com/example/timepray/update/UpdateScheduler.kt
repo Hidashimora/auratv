@@ -11,11 +11,22 @@ object UpdateScheduler {
 
     private const val REQUEST_CODE = 1001
 
-    fun scheduleDailyMidnightCheck(context: Context) {
+    fun applyFromPrefs(context: Context) {
+        if (!UpdatePreferences.isAutoUpdateEnabled(context)) {
+            cancel(context)
+            return
+        }
+        schedule(
+            context,
+            UpdatePreferences.getCheckHour(context),
+            UpdatePreferences.getCheckMinute(context)
+        )
+    }
+
+    fun schedule(context: Context, hour: Int, minute: Int) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val pendingIntent = createPendingIntent(context)
-
-        val triggerAt = nextMidnightMillis()
+        val triggerAt = nextTriggerMillis(hour, minute)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             alarmManager.setExactAndAllowWhileIdle(
@@ -29,10 +40,15 @@ object UpdateScheduler {
         }
     }
 
-    fun nextMidnightMillis(): Long {
+    fun cancel(context: Context) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        alarmManager.cancel(createPendingIntent(context))
+    }
+
+    fun nextTriggerMillis(hour: Int, minute: Int): Long {
         return Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0)
-            set(Calendar.MINUTE, 0)
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
             if (timeInMillis <= System.currentTimeMillis()) {

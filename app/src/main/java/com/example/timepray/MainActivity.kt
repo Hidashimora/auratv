@@ -3,7 +3,6 @@ package com.example.timepray
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
@@ -42,6 +41,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
 import com.example.timepray.update.ApkUpdateManager
+import com.example.timepray.update.UpdatePreferences
 import com.example.timepray.update.UpdateScheduler
 import com.example.timepray.BuildConfig
 import java.text.SimpleDateFormat
@@ -58,6 +58,23 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_LAST_UPDATE_CHECK_DAY = "last_update_check_day"
         private const val KEY_LOADED_VERSION_CODE = "loaded_version_code"
         private const val OFFLINE_MESSAGE = "Нет подключения к интернету\nОжидание сети..."
+        private const val PAGE_FIX_JS = """
+            (function() {
+                if (navigator.serviceWorker) {
+                    navigator.serviceWorker.getRegistrations().then(function(regs) {
+                        regs.forEach(function(r) { r.unregister(); });
+                    });
+                }
+                var h = window.innerHeight || document.documentElement.clientHeight || 1080;
+                if (document.body) document.body.style.minHeight = h + 'px';
+                var main = document.querySelector('main');
+                if (main) {
+                    main.style.height = h + 'px';
+                    main.style.minHeight = h + 'px';
+                }
+            })();
+        """
+        private val PAGE_FIX_DELAYS_MS = longArrayOf(300L, 1000L, 2000L, 4000L)
     }
 
     private lateinit var cm: ConnectivityManager
@@ -84,9 +101,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settingsMenuText: TextView
     private var settingsMenuVisible = false
     private var settingsMenuSelection = SettingsMenuItem.WIFI
+    private var settingsTimeEditing = false
     private var mainFrameHttpErrorRetried = false
 
-    private enum class SettingsMenuItem { WIFI, UPDATE }
+    private enum class SettingsMenuItem { WIFI, UPDATE, AUTO_UPDATE, AUTO_UPDATE_TIME }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -171,8 +189,8 @@ class MainActivity : AppCompatActivity() {
                 safeBrowsingEnabled = false
             }
         }
-        webView.setBackgroundColor(Color.TRANSPARENT)
-        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+        webView.setBackgroundColor(0xFF0c192a.toInt())
+        webView.clearCache(true)
 
         // Куки
         CookieManager.getInstance().setAcceptCookie(true)
@@ -281,7 +299,7 @@ class MainActivity : AppCompatActivity() {
             BuildConfig.VERSION_CODE
         )
         if (isUpdateConfigured()) {
-            UpdateScheduler.scheduleDailyMidnightCheck(this)
+            UpdateScheduler.applyFromPrefs(this)
         }
         handleUpdateCheckIntent(intent)
 
@@ -315,6 +333,7 @@ class MainActivity : AppCompatActivity() {
                     lastUrl = it
                     if (isSameSiteAsHome(it)) saveLastSuccessfulUrl(it)
                 }
+                view?.let { applyPageFixes(it) }
             }
 
             override fun onReceivedHttpError(
@@ -420,22 +439,16 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        lastUrl = resolveStartUrl()
+        lastUrl = homeUrl()
         updateOnlineState()
         if (isOnline) {
-            loadWebPage(lastUrl)
+            loadWebPage(lastUrl, WebSettings.LOAD_NO_CACHE, forceNetwork = true)
         } else {
             loadCachedLastPage()
         }
     }
 
     private fun homeUrl(): String = getString(R.string.app_website_url).trim()
-
-    private fun resolveStartUrl(): String {
-        val home = homeUrl()
-        val saved = prefs.getString(KEY_LAST_URL, null)?.takeIf { it.isNotBlank() } ?: return home
-        return if (isSameSiteAsHome(saved)) saved else home
-    }
 
     private fun isSameSiteAsHome(url: String): Boolean {
         return try {
@@ -467,10 +480,22 @@ class MainActivity : AppCompatActivity() {
         return true
     }
 
-    private fun loadWebPage(url: String, forceNetwork: Boolean = false) {
+    private fun loadWebPage(
+        url: String,
+        cacheMode: Int = WebSettings.LOAD_DEFAULT,
+        forceNetwork: Boolean = false
+    ) {
         webView.settings.userAgentString = browserUserAgent()
+        webView.settings.cacheMode = cacheMode
         val bypass = forceNetwork || shouldBypassCacheForLoad()
         webView.loadUrl(url, browserHeaders(bypass))
+    }
+
+    private fun applyPageFixes(view: WebView) {
+        view.evaluateJavascript(PAGE_FIX_JS, null)
+        PAGE_FIX_DELAYS_MS.forEach { delay ->
+            handler.postDelayed({ view.evaluateJavascript(PAGE_FIX_JS, null) }, delay)
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -515,7 +540,7 @@ class MainActivity : AppCompatActivity() {
     private fun loadCachedLastPage() {
         runOnUiThread {
             val targetUrl = if (lastUrl.isNotBlank()) lastUrl else homeUrl()
-            loadWebPage(targetUrl)
+            loadWebPage(targetUrl, WebSettings.LOAD_CACHE_ELSE_NETWORK)
             showOffline()
         }
     }
@@ -573,22 +598,66 @@ class MainActivity : AppCompatActivity() {
         webView.requestFocus()
     }
 
+    private fun visibleSettingsMenuItems(): List<SettingsMenuItem> {
+        val items = mutableListOf(
+            SettingsMenuItem.WIFI,
+            SettingsMenuItem.UPDATE,
+            SettingsMenuItem.AUTO_UPDATE
+        )
+        if (UpdatePreferences.isAutoUpdateEnabled(this)) {
+            items.add(SettingsMenuItem.AUTO_UPDATE_TIME)
+        }
+        return items
+    }
+
+    private fun cycleSettingsMenu(forward: Boolean) {
+        val items = visibleSettingsMenuItems()
+        val currentIndex = items.indexOf(settingsMenuSelection).coerceAtLeast(0)
+        val nextIndex = if (forward) {
+            (currentIndex + 1) % items.size
+        } else {
+            (currentIndex - 1 + items.size) % items.size
+        }
+        settingsMenuSelection = items[nextIndex]
+        updateSettingsMenuText()
+    }
+
+    private fun menuLine(item: SettingsMenuItem, label: String): String =
+        if (settingsMenuSelection == item) "▶  $label" else "    $label"
+
     private fun updateSettingsMenuText() {
-        val wifiLine = if (settingsMenuSelection == SettingsMenuItem.WIFI) "▶  Wi‑Fi" else "    Wi‑Fi"
-        val updateLine = if (settingsMenuSelection == SettingsMenuItem.UPDATE) "▶  Обновление" else "    Обновление"
+        val autoEnabled = UpdatePreferences.isAutoUpdateEnabled(this)
+        val autoLabel = if (autoEnabled) "Автообновление: Вкл" else "Автообновление: Выкл"
+        val timeLabel = if (settingsTimeEditing) {
+            "Время: ${UpdatePreferences.formatCheckTime(this)} (изменение)"
+        } else {
+            "Время: ${UpdatePreferences.formatCheckTime(this)}"
+        }
+
         settingsMenuText.text = buildString {
             appendLine("Меню")
             appendLine()
-            appendLine(wifiLine)
-            appendLine(updateLine)
+            appendLine(menuLine(SettingsMenuItem.WIFI, "Wi‑Fi"))
+            appendLine(menuLine(SettingsMenuItem.UPDATE, "Проверить обновление"))
+            appendLine(menuLine(SettingsMenuItem.AUTO_UPDATE, autoLabel))
+            if (autoEnabled) {
+                appendLine(menuLine(SettingsMenuItem.AUTO_UPDATE_TIME, timeLabel))
+            }
             appendLine()
-            append("↑↓ — выбор   OK — открыть   Назад — закрыть")
+            append(
+                if (settingsTimeEditing) {
+                    "←→ часы   ↑↓ минуты   OK — сохранить   Назад — отмена"
+                } else {
+                    "↑↓ — выбор   OK — действие   Назад — закрыть"
+                }
+            )
         }
     }
 
     private fun showSettingsMenu() {
         if (settingsMenuVisible) return
         settingsMenuVisible = true
+        settingsTimeEditing = false
         settingsMenuSelection = SettingsMenuItem.WIFI
         updateSettingsMenuText()
         settingsMenuOverlay.isVisible = true
@@ -598,8 +667,50 @@ class MainActivity : AppCompatActivity() {
     private fun hideSettingsMenu() {
         if (!settingsMenuVisible) return
         settingsMenuVisible = false
+        settingsTimeEditing = false
         settingsMenuOverlay.isVisible = false
         webView.requestFocus()
+    }
+
+    private fun applyAutoUpdateSchedule() {
+        if (!isUpdateConfigured()) return
+        UpdateScheduler.applyFromPrefs(this)
+    }
+
+    private fun adjustAutoUpdateHour(delta: Int) {
+        val hour = (UpdatePreferences.getCheckHour(this) + delta + 24) % 24
+        UpdatePreferences.setCheckTime(this, hour, UpdatePreferences.getCheckMinute(this))
+        updateSettingsMenuText()
+    }
+
+    private fun adjustAutoUpdateMinute(delta: Int) {
+        val minute = (UpdatePreferences.getCheckMinute(this) + delta + 60) % 60
+        UpdatePreferences.setCheckTime(this, UpdatePreferences.getCheckHour(this), minute)
+        updateSettingsMenuText()
+    }
+
+    private fun saveAutoUpdateTime() {
+        settingsTimeEditing = false
+        applyAutoUpdateSchedule()
+        updateSettingsMenuText()
+        Toast.makeText(this, "Время проверки: ${UpdatePreferences.formatCheckTime(this)}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toggleAutoUpdate() {
+        val enabled = !UpdatePreferences.isAutoUpdateEnabled(this)
+        UpdatePreferences.setAutoUpdateEnabled(this, enabled)
+        settingsTimeEditing = false
+        if (!enabled && settingsMenuSelection == SettingsMenuItem.AUTO_UPDATE_TIME) {
+            settingsMenuSelection = SettingsMenuItem.AUTO_UPDATE
+        }
+        applyAutoUpdateSchedule()
+        updateSettingsMenuText()
+        val message = if (enabled) {
+            "Автообновление включено (${UpdatePreferences.formatCheckTime(this)})"
+        } else {
+            "Автообновление выключено"
+        }
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
     private fun activateSettingsMenuSelection() {
@@ -611,6 +722,11 @@ class MainActivity : AppCompatActivity() {
             SettingsMenuItem.UPDATE -> {
                 hideSettingsMenu()
                 checkForAppUpdate(force = true)
+            }
+            SettingsMenuItem.AUTO_UPDATE -> toggleAutoUpdate()
+            SettingsMenuItem.AUTO_UPDATE_TIME -> {
+                settingsTimeEditing = true
+                updateSettingsMenuText()
             }
         }
     }
@@ -734,29 +850,62 @@ class MainActivity : AppCompatActivity() {
         if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
 
         if (settingsMenuVisible) {
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    settingsMenuSelection = SettingsMenuItem.WIFI
-                    updateSettingsMenuText()
-                    return true
+            if (settingsTimeEditing) {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> {
+                        adjustAutoUpdateHour(-1)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        adjustAutoUpdateHour(1)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        adjustAutoUpdateMinute(1)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        adjustAutoUpdateMinute(-1)
+                        return true
+                    }
+                    in listOf(
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER,
+                        KeyEvent.KEYCODE_BUTTON_A
+                    ) -> {
+                        saveAutoUpdateTime()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                        settingsTimeEditing = false
+                        updateSettingsMenuText()
+                        return true
+                    }
                 }
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    settingsMenuSelection = SettingsMenuItem.UPDATE
-                    updateSettingsMenuText()
-                    return true
-                }
-                in listOf(
-                    KeyEvent.KEYCODE_DPAD_CENTER,
-                    KeyEvent.KEYCODE_ENTER,
-                    KeyEvent.KEYCODE_NUMPAD_ENTER,
-                    KeyEvent.KEYCODE_BUTTON_A
-                ) -> {
-                    activateSettingsMenuSelection()
-                    return true
-                }
-                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
-                    hideSettingsMenu()
-                    return true
+            } else {
+                when (event.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_UP -> {
+                        cycleSettingsMenu(forward = false)
+                        return true
+                    }
+                    KeyEvent.KEYCODE_DPAD_DOWN -> {
+                        cycleSettingsMenu(forward = true)
+                        return true
+                    }
+                    in listOf(
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER,
+                        KeyEvent.KEYCODE_NUMPAD_ENTER,
+                        KeyEvent.KEYCODE_BUTTON_A
+                    ) -> {
+                        activateSettingsMenuSelection()
+                        return true
+                    }
+                    KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                        hideSettingsMenu()
+                        return true
+                    }
                 }
             }
         }
