@@ -12,6 +12,8 @@ import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
 import android.net.http.SslError
+import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -54,6 +56,18 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_LAST_URL = "last_success_url"
         private const val KEY_LAST_UPDATE_CHECK_DAY = "last_update_check_day"
         private const val OFFLINE_MESSAGE = "Нет подключения к интернету\nОжидание сети..."
+        private const val TAG = "AuraWebView"
+        private const val VIEWPORT_FIX_JS = """
+            (function() {
+                var h = window.innerHeight || document.documentElement.clientHeight || 1080;
+                if (document.body) document.body.style.minHeight = h + 'px';
+                var main = document.querySelector('main');
+                if (main) {
+                    main.style.height = h + 'px';
+                    main.style.minHeight = h + 'px';
+                }
+            })();
+        """
     }
 
     private lateinit var cm: ConnectivityManager
@@ -158,8 +172,12 @@ class MainActivity : AppCompatActivity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             userAgentString = getString(R.string.app_webview_user_agent)
             loadsImagesAutomatically = true
+            javaScriptCanOpenWindowsAutomatically = true
+            @Suppress("DEPRECATION")
+            databaseEnabled = true
         }
-        webView.setBackgroundColor(0xFF000000.toInt())
+        webView.setBackgroundColor(0xFF0c192a.toInt())
+        webView.clearCache(true)
 
         // Куки
         CookieManager.getInstance().setAcceptCookie(true)
@@ -285,6 +303,7 @@ class MainActivity : AppCompatActivity() {
                     lastUrl = it
                     if (isSameSiteAsHome(it)) saveLastSuccessfulUrl(it)
                 }
+                view?.evaluateJavascript(VIEWPORT_FIX_JS, null)
             }
 
             override fun onReceivedHttpError(
@@ -333,6 +352,13 @@ class MainActivity : AppCompatActivity() {
 
         // Сохраняем ChromeClient в переменную, чтобы обходить API 26 getWebChromeClient()
         myChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(message: ConsoleMessage?): Boolean {
+                message?.let {
+                    Log.d(TAG, "${it.messageLevel()}: ${it.message()} (${it.sourceId()}:${it.lineNumber()})")
+                }
+                return true
+            }
+
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                 if (customVideoView != null || view == null) {
                     callback?.onCustomViewHidden()
@@ -398,23 +424,17 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Загружаем сайт из config.xml (сохранённый URL только если тот же домен)
-        lastUrl = resolveStartUrl()
+        // Всегда открываем главную — экран с QR для привязки TV
+        lastUrl = homeUrl()
         updateOnlineState()
         if (isOnline) {
-            loadWebPage(lastUrl, WebSettings.LOAD_DEFAULT)
+            loadWebPage(lastUrl, WebSettings.LOAD_NO_CACHE)
         } else {
             loadCachedLastPage()
         }
     }
 
     private fun homeUrl(): String = getString(R.string.app_website_url).trim()
-
-    private fun resolveStartUrl(): String {
-        val home = homeUrl()
-        val saved = prefs.getString(KEY_LAST_URL, null)?.takeIf { it.isNotBlank() } ?: return home
-        return if (isSameSiteAsHome(saved)) saved else home
-    }
 
     private fun isSameSiteAsHome(url: String): Boolean {
         return try {
@@ -424,7 +444,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyWebViewUserAgent() {
+        webView.settings.userAgentString = getString(R.string.app_webview_user_agent)
+    }
+
     private fun loadWebPage(url: String, cacheMode: Int) {
+        applyWebViewUserAgent()
         webView.settings.cacheMode = cacheMode
         webView.loadUrl(url)
     }
