@@ -33,6 +33,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
 import android.webkit.WebResourceError
+import android.webkit.WebResourceResponse
 import android.widget.TextView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -52,6 +53,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "timepray_prefs"
         private const val KEY_LAST_URL = "last_success_url"
         private const val KEY_LAST_UPDATE_CHECK_DAY = "last_update_check_day"
+        private const val OFFLINE_MESSAGE = "Нет подключения к интернету\nОжидание сети..."
     }
 
     private lateinit var cm: ConnectivityManager
@@ -153,16 +155,18 @@ class MainActivity : AppCompatActivity() {
             useWideViewPort = true
             builtInZoomControls = false
             displayZoomControls = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            userAgentString = userAgentString + " AndroidTVWebView"
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            userAgentString = getString(R.string.app_webview_user_agent)
+            loadsImagesAutomatically = true
         }
+        webView.setBackgroundColor(0xFF000000.toInt())
 
         // Куки
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
         offlineText = TextView(this).apply {
-            text = "Нет подключения к интернету\nОжидание сети..."
+            text = OFFLINE_MESSAGE
             gravity = Gravity.CENTER
             textSize = 18f
             setBackgroundColor(0xCC000000.toInt())
@@ -270,9 +274,7 @@ class MainActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val url = request?.url?.toString() ?: return false
-                view?.loadUrl(url)
-                return true
+                return false
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) = Unit
@@ -281,7 +283,19 @@ class MainActivity : AppCompatActivity() {
                 if (isOnline) hideOffline() else showOffline()
                 url?.let {
                     lastUrl = it
-                    saveLastSuccessfulUrl(it)
+                    if (isSameSiteAsHome(it)) saveLastSuccessfulUrl(it)
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                if (request?.isForMainFrame != true) return
+                val code = errorResponse?.statusCode ?: return
+                if (code >= 400) {
+                    runOnUiThread { showPageError("Сайт недоступен (ошибка $code)") }
                 }
             }
 
@@ -300,16 +314,20 @@ class MainActivity : AppCompatActivity() {
                         code == ERROR_IO
 
                 if (isConnectivityError || !isOnline) {
-                    val failedUrl = request?.url?.toString()
+                    val failedUrl = request.url?.toString()
                     showOffline()
                     if (!lastUrl.isNullOrBlank() && failedUrl != lastUrl) {
                         loadCachedLastPage()
+                    }
+                } else {
+                    runOnUiThread {
+                        showPageError("Не удалось загрузить страницу (код $code)")
                     }
                 }
             }
 
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                super.onReceivedSslError(view, handler, error)
+                handler?.proceed()
             }
         }
 
@@ -380,20 +398,35 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Загружаем сайт
-        lastUrl = prefs.getString(KEY_LAST_URL, null)?.takeIf { it.isNotBlank() }
-            ?: getString(R.string.app_website_url)
+        // Загружаем сайт из config.xml (сохранённый URL только если тот же домен)
+        lastUrl = resolveStartUrl()
         updateOnlineState()
         if (isOnline) {
-            webView.settings.cacheMode = WebSettings.LOAD_DEFAULT
-            webView.loadUrl(lastUrl)
+            loadWebPage(lastUrl, WebSettings.LOAD_DEFAULT)
         } else {
             loadCachedLastPage()
         }
-        // Загружаем ваш сайт
-//        val device = "AndroidTV"
-//        val url = getString(R.string.app_website_url) //+ "?device=111"//${URLEncoder.encode(device, "UTF-8")}
-//        webView.loadUrl(url)
+    }
+
+    private fun homeUrl(): String = getString(R.string.app_website_url).trim()
+
+    private fun resolveStartUrl(): String {
+        val home = homeUrl()
+        val saved = prefs.getString(KEY_LAST_URL, null)?.takeIf { it.isNotBlank() } ?: return home
+        return if (isSameSiteAsHome(saved)) saved else home
+    }
+
+    private fun isSameSiteAsHome(url: String): Boolean {
+        return try {
+            Uri.parse(url).host.equals(Uri.parse(homeUrl()).host, ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun loadWebPage(url: String, cacheMode: Int) {
+        webView.settings.cacheMode = cacheMode
+        webView.loadUrl(url)
     }
     @Suppress("DEPRECATION")
     private fun isLegacyNetworkConnected(): Boolean {
@@ -417,7 +450,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun hideOffline() {
-        runOnUiThread { offlineText.isVisible = false }
+        runOnUiThread {
+            offlineText.text = OFFLINE_MESSAGE
+            offlineText.isVisible = false
+        }
+    }
+
+    private fun showPageError(message: String) {
+        offlineText.text = message
+        showOffline()
     }
 
     private fun saveLastSuccessfulUrl(url: String) {
@@ -428,9 +469,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun loadCachedLastPage() {
         runOnUiThread {
-            val targetUrl = if (lastUrl.isNotBlank()) lastUrl else getString(R.string.app_website_url)
-            webView.settings.cacheMode = WebSettings.LOAD_CACHE_ELSE_NETWORK
-            webView.loadUrl(targetUrl)
+            val targetUrl = if (lastUrl.isNotBlank()) lastUrl else homeUrl()
+            loadWebPage(targetUrl, WebSettings.LOAD_CACHE_ELSE_NETWORK)
             showOffline()
         }
     }
