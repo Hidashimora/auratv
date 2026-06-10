@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.example.timepray.update.UpdateScheduler
 
 class BootReceiver : BroadcastReceiver() {
     companion object {
@@ -15,6 +16,7 @@ class BootReceiver : BroadcastReceiver() {
         when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_LOCKED_BOOT_COMPLETED -> {
+                UpdateScheduler.scheduleDailyMidnightCheck(context)
 
                 val launchIntent = Intent(context, MainActivity::class.java).apply {
                     putExtra(EXTRA_STARTED_FROM_BOOT, true)

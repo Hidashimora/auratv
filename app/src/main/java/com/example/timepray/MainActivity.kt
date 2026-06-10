@@ -38,16 +38,20 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isVisible
 import com.example.timepray.update.ApkUpdateManager
+import com.example.timepray.update.UpdateScheduler
 import com.example.timepray.BuildConfig
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 
 class MainActivity : AppCompatActivity() {
     companion object {
+        const val EXTRA_FORCE_UPDATE_CHECK = "com.example.timepray.extra.FORCE_UPDATE_CHECK"
+
         private const val PREFS_NAME = "timepray_prefs"
         private const val KEY_LAST_URL = "last_success_url"
-        private const val KEY_LAST_UPDATE_CHECK = "last_update_check_ms"
-        private const val UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000L
-        private const val UPDATE_START_DELAY_MS = 10_000L
+        private const val KEY_LAST_UPDATE_CHECK_DAY = "last_update_check_day"
     }
 
     private lateinit var cm: ConnectivityManager
@@ -69,6 +73,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var updateOverlay: FrameLayout
     private lateinit var updateOverlayText: TextView
     private var updateOverlayVisible = false
+
+    private lateinit var settingsMenuOverlay: FrameLayout
+    private lateinit var settingsMenuText: TextView
+    private var settingsMenuVisible = false
+    private var settingsMenuSelection = SettingsMenuItem.WIFI
+
+    private enum class SettingsMenuItem { WIFI, UPDATE }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -219,13 +230,43 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
+        settingsMenuText = TextView(this).apply {
+            gravity = Gravity.CENTER
+            textSize = 22f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(48, 48, 48, 48)
+        }
+        settingsMenuOverlay = FrameLayout(this).apply {
+            setBackgroundColor(0xE6000000.toInt())
+            isVisible = false
+            isFocusable = true
+            isFocusableInTouchMode = true
+            addView(
+                settingsMenuText,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            )
+        }
+        rootContainer?.addView(
+            settingsMenuOverlay,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+
         apkUpdateManager = ApkUpdateManager(
             this,
             getString(R.string.update_github_owner),
             getString(R.string.update_github_repo),
             BuildConfig.VERSION_CODE
         )
-        scheduleUpdateCheck()
+        if (isUpdateConfigured()) {
+            UpdateScheduler.scheduleDailyMidnightCheck(this)
+        }
+        handleUpdateCheckIntent(intent)
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
@@ -310,7 +351,9 @@ class MainActivity : AppCompatActivity() {
         // Обработка "Назад": либо выходим из фулл-скрина, либо назад в истории, либо закрываем
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (wifiMenuVisible) {
+                if (settingsMenuVisible) {
+                    hideSettingsMenu()
+                } else if (wifiMenuVisible) {
                     hideWifiMenu()
                 } else if (customVideoView != null) {
                     // НЕ вызываем webView.webChromeClient?.onHideCustomView() — это и ломало сборку на API<26
@@ -325,7 +368,9 @@ class MainActivity : AppCompatActivity() {
 
         // D-pad прокрутка (OK/Enter обрабатываются в dispatchKeyEvent)
         webView.setOnKeyListener { _, keyCode, event ->
-            if (event.action != KeyEvent.ACTION_DOWN || wifiMenuVisible) return@setOnKeyListener false
+            if (event.action != KeyEvent.ACTION_DOWN || wifiMenuVisible || settingsMenuVisible) {
+                return@setOnKeyListener false
+            }
             when (keyCode) {
                 KeyEvent.KEYCODE_DPAD_DOWN -> { webView.pageDown(true); true }
                 KeyEvent.KEYCODE_DPAD_UP -> { webView.pageUp(true); true }
@@ -390,6 +435,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleUpdateCheckIntent(intent)
+    }
+
     override fun onStart() {
         super.onStart()
         val req = NetworkRequest.Builder()
@@ -437,6 +488,52 @@ class MainActivity : AppCompatActivity() {
         webView.requestFocus()
     }
 
+    private fun updateSettingsMenuText() {
+        val wifiLine = if (settingsMenuSelection == SettingsMenuItem.WIFI) "▶  Wi‑Fi" else "    Wi‑Fi"
+        val updateLine = if (settingsMenuSelection == SettingsMenuItem.UPDATE) "▶  Обновление" else "    Обновление"
+        settingsMenuText.text = buildString {
+            appendLine("Меню")
+            appendLine()
+            appendLine(wifiLine)
+            appendLine(updateLine)
+            appendLine()
+            append("↑↓ — выбор   OK — открыть   Назад — закрыть")
+        }
+    }
+
+    private fun showSettingsMenu() {
+        if (settingsMenuVisible) return
+        settingsMenuVisible = true
+        settingsMenuSelection = SettingsMenuItem.WIFI
+        updateSettingsMenuText()
+        settingsMenuOverlay.isVisible = true
+        settingsMenuOverlay.requestFocus()
+    }
+
+    private fun hideSettingsMenu() {
+        if (!settingsMenuVisible) return
+        settingsMenuVisible = false
+        settingsMenuOverlay.isVisible = false
+        webView.requestFocus()
+    }
+
+    private fun activateSettingsMenuSelection() {
+        when (settingsMenuSelection) {
+            SettingsMenuItem.WIFI -> {
+                hideSettingsMenu()
+                showWifiMenu()
+            }
+            SettingsMenuItem.UPDATE -> {
+                hideSettingsMenu()
+                checkForAppUpdate(force = true)
+            }
+        }
+    }
+
+    private fun isSettingsKey(keyCode: Int): Boolean {
+        return keyCode == KeyEvent.KEYCODE_SETTINGS || keyCode == KeyEvent.KEYCODE_MENU
+    }
+
     private fun isConfirmKey(keyCode: Int): Boolean {
         return keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
                 keyCode == KeyEvent.KEYCODE_ENTER ||
@@ -478,18 +575,25 @@ class MainActivity : AppCompatActivity() {
         return owner.isNotBlank() && !owner.startsWith("YOUR_")
     }
 
-    private fun scheduleUpdateCheck() {
-        if (!isUpdateConfigured() || !isOnline) return
+    private fun todayKey(): String =
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
-        val lastCheck = prefs.getLong(KEY_LAST_UPDATE_CHECK, 0L)
-        val now = System.currentTimeMillis()
-        if (now - lastCheck < UPDATE_CHECK_INTERVAL_MS) return
+    private fun wasUpdateCheckedToday(): Boolean =
+        prefs.getString(KEY_LAST_UPDATE_CHECK_DAY, "") == todayKey()
 
-        handler.postDelayed({ checkForAppUpdate() }, UPDATE_START_DELAY_MS)
+    private fun markUpdateCheckedToday() {
+        prefs.edit().putString(KEY_LAST_UPDATE_CHECK_DAY, todayKey()).apply()
     }
 
-    private fun checkForAppUpdate() {
+    private fun handleUpdateCheckIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_FORCE_UPDATE_CHECK, false) == true) {
+            handler.post { checkForAppUpdate(force = true) }
+        }
+    }
+
+    private fun checkForAppUpdate(force: Boolean = false) {
         if (!isUpdateConfigured() || !isOnline || updateOverlayVisible) return
+        if (!force && wasUpdateCheckedToday()) return
 
         if (!apkUpdateManager.canInstallPackages()) {
             apkUpdateManager.createInstallPermissionIntent()?.let { startActivity(it) }
@@ -501,7 +605,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        prefs.edit().putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis()).apply()
+        markUpdateCheckedToday()
         showUpdateOverlay("Проверка обновлений...")
 
         apkUpdateManager.checkAndInstall(
@@ -544,7 +648,39 @@ class MainActivity : AppCompatActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
 
+        if (settingsMenuVisible) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> {
+                    settingsMenuSelection = SettingsMenuItem.WIFI
+                    updateSettingsMenuText()
+                    return true
+                }
+                KeyEvent.KEYCODE_DPAD_DOWN -> {
+                    settingsMenuSelection = SettingsMenuItem.UPDATE
+                    updateSettingsMenuText()
+                    return true
+                }
+                in listOf(
+                    KeyEvent.KEYCODE_DPAD_CENTER,
+                    KeyEvent.KEYCODE_ENTER,
+                    KeyEvent.KEYCODE_NUMPAD_ENTER,
+                    KeyEvent.KEYCODE_BUTTON_A
+                ) -> {
+                    activateSettingsMenuSelection()
+                    return true
+                }
+                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                    hideSettingsMenu()
+                    return true
+                }
+            }
+        }
+
         if (isCloseKey(event.keyCode)) {
+            if (settingsMenuVisible) {
+                hideSettingsMenu()
+                return true
+            }
             if (wifiMenuVisible) {
                 hideWifiMenu()
                 return true
@@ -552,17 +688,23 @@ class MainActivity : AppCompatActivity() {
             return super.dispatchKeyEvent(event)
         }
 
+        if (isSettingsKey(event.keyCode)) {
+            showSettingsMenu()
+            return true
+        }
+
         if (event.keyCode == KeyEvent.KEYCODE_Q && event.isCtrlPressed) {
             showWifiMenu()
             return true
         }
 
-        if (isConfirmKey(event.keyCode)) {
-            if (wifiMenuVisible) {
-                openWifiSettings()
-            } else {
-                showWifiMenu()
-            }
+        if (event.keyCode == KeyEvent.KEYCODE_W && event.isCtrlPressed) {
+            checkForAppUpdate(force = true)
+            return true
+        }
+
+        if (isConfirmKey(event.keyCode) && wifiMenuVisible) {
+            openWifiSettings()
             return true
         }
 
