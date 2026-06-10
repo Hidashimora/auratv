@@ -9,7 +9,7 @@ object UpdatePreferences {
     const val KEY_AUTO_UPDATE_MINUTE = "auto_update_minute"
 
     fun isAutoUpdateEnabled(context: Context): Boolean =
-        prefs(context).getBoolean(KEY_AUTO_UPDATE_ENABLED, true)
+        prefs(context).getBoolean(KEY_AUTO_UPDATE_ENABLED, false)
 
     fun getCheckHour(context: Context): Int =
         prefs(context).getInt(KEY_AUTO_UPDATE_HOUR, 0).coerceIn(0, 23)

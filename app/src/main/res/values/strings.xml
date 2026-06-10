@@ -2,4 +2,9 @@
     <string name="app_name">Aura</string>
     <string name="page_load_error">Не удалось загрузить страницу (код %1$d)</string>
     <string name="update_check_in_progress">Проверка обновлений…</string>
+    <string name="webview_menu_line">WebView: %1$s</string>
+    <string name="webview_not_found">Компонент WebView не найден на устройстве</string>
+    <string name="webview_unknown_legacy">WebView (старая версия Android)</string>
+    <string name="webview_update_legacy">Обновите прошивку ТВ или установите Android System WebView</string>
+    <string name="webview_update_failed">Откройте магазин приложений и обновите: %1$s</string>
 </resources>
