@@ -2,7 +2,6 @@ package com.example.timepray
 
 
 import android.annotation.SuppressLint
-import android.graphics.Bitmap
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
@@ -33,8 +32,6 @@ import android.os.Looper
 import android.view.Gravity
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
-import android.webkit.WebResourceResponse
-import java.io.ByteArrayInputStream
 import android.widget.TextView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -56,26 +53,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "aura_prefs"
         private const val KEY_LAST_URL = "last_success_url"
         private const val KEY_LAST_UPDATE_CHECK_DAY = "last_update_check_day"
-        private const val KEY_LOADED_VERSION_CODE = "loaded_version_code"
         private const val OFFLINE_MESSAGE = "Нет подключения к интернету\nОжидание сети..."
-        @Suppress("SpellCheckingInspection")
-        private const val PAGE_FIX_JS = """
-            (function() {
-                if (navigator.serviceWorker) {
-                    navigator.serviceWorker.getRegistrations().then(function(regs) {
-                        regs.forEach(function(r) { r.unregister(); });
-                    });
-                }
-                var h = window.innerHeight || document.documentElement.clientHeight || 1080;
-                if (document.body) document.body.style.minHeight = h + 'px';
-                var main = document.querySelector('main');
-                if (main) {
-                    main.style.height = h + 'px';
-                    main.style.minHeight = h + 'px';
-                }
-            })();
-        """
-        private val PAGE_FIX_DELAYS_MS = longArrayOf(300L, 1000L, 2000L, 4000L)
     }
 
     private lateinit var cm: ConnectivityManager
@@ -103,9 +81,8 @@ class MainActivity : AppCompatActivity() {
     private var settingsMenuVisible = false
     private var settingsMenuSelection = SettingsMenuItem.WIFI
     private var settingsTimeEditing = false
-    private var mainFrameHttpErrorRetried = false
 
-    private enum class SettingsMenuItem { WIFI, UPDATE, AUTO_UPDATE, AUTO_UPDATE_TIME, WEBVIEW_UPDATE }
+    private enum class SettingsMenuItem { WIFI, UPDATE, AUTO_UPDATE, AUTO_UPDATE_TIME }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -189,11 +166,7 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 safeBrowsingEnabled = false
             }
-            @Suppress("DEPRECATION")
-            setNeedInitialFocus(false)
         }
-        webView.setBackgroundColor(0xFF0c192a.toInt())
-        webView.clearCache(true)
 
         // Куки
         CookieManager.getInstance().setAcceptCookie(true)
@@ -311,44 +284,11 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
 
-            override fun shouldInterceptRequest(
-                view: WebView?,
-                request: WebResourceRequest?
-            ): WebResourceResponse? {
-                // Service Worker на TV WebView кэширует ошибки и отдаёт пустые ответы — сайт белеет.
-                val path = request?.url?.path.orEmpty()
-                if (path == "/sw.js" || path.endsWith("/sw.js")) {
-                    return WebResourceResponse(
-                        "application/javascript",
-                        "utf-8",
-                        ByteArrayInputStream(ByteArray(0))
-                    )
-                }
-                return super.shouldInterceptRequest(view, request)
-            }
-
-            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) = Unit
-
             override fun onPageFinished(view: WebView?, url: String?) {
-                mainFrameHttpErrorRetried = false
                 if (isOnline) hideOffline() else showOffline()
                 url?.let {
                     lastUrl = it
                     if (isSameSiteAsHome(it)) saveLastSuccessfulUrl(it)
-                }
-                view?.let { applyPageFixes(it) }
-            }
-
-            override fun onReceivedHttpError(
-                view: WebView?,
-                request: WebResourceRequest?,
-                errorResponse: WebResourceResponse?
-            ) {
-                if (request?.isForMainFrame != true) return
-                val code = errorResponse?.statusCode ?: return
-                if (code >= 400 && !mainFrameHttpErrorRetried) {
-                    mainFrameHttpErrorRetried = true
-                    runOnUiThread { loadWebPage(homeUrl(), forceNetwork = true) }
                 }
             }
 
@@ -436,16 +376,22 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        lastUrl = homeUrl()
+        lastUrl = resolveStartUrl()
         updateOnlineState()
         if (isOnline) {
-            loadWebPage(lastUrl, WebSettings.LOAD_NO_CACHE, forceNetwork = true)
+            loadWebPage(lastUrl)
         } else {
             loadCachedLastPage()
         }
     }
 
     private fun homeUrl(): String = getString(R.string.app_website_url).trim()
+
+    private fun resolveStartUrl(): String {
+        val home = homeUrl()
+        val saved = prefs.getString(KEY_LAST_URL, null)?.takeIf { it.isNotBlank() } ?: return home
+        return if (isSameSiteAsHome(saved)) saved else home
+    }
 
     private fun isSameSiteAsHome(url: String): Boolean {
         return try {
@@ -473,44 +419,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun browserUserAgent(): String = getString(R.string.app_webview_user_agent)
-
-    private fun browserHeaders(bypassCache: Boolean = false): Map<String, String> {
-        val headers = linkedMapOf(
-            "User-Agent" to browserUserAgent(),
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language" to "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-        )
-        if (bypassCache) {
-            headers["Cache-Control"] = "no-cache"
-            headers["Pragma"] = "no-cache"
-        }
-        return headers
-    }
-
-    private fun shouldBypassCacheForLoad(): Boolean {
-        val loadedVersion = prefs.getInt(KEY_LOADED_VERSION_CODE, -1)
-        if (loadedVersion == BuildConfig.VERSION_CODE) return false
-        prefs.edit { putInt(KEY_LOADED_VERSION_CODE, BuildConfig.VERSION_CODE) }
-        return true
-    }
-
-    private fun loadWebPage(
-        url: String,
-        cacheMode: Int = WebSettings.LOAD_DEFAULT,
-        forceNetwork: Boolean = false
-    ) {
-        webView.settings.userAgentString = browserUserAgent()
+    private fun loadWebPage(url: String, cacheMode: Int = WebSettings.LOAD_DEFAULT) {
+        webView.settings.userAgentString = getString(R.string.app_webview_user_agent)
         webView.settings.cacheMode = cacheMode
-        val bypass = forceNetwork || shouldBypassCacheForLoad()
-        webView.loadUrl(url, browserHeaders(bypass))
-    }
-
-    private fun applyPageFixes(view: WebView) {
-        view.evaluateJavascript(PAGE_FIX_JS, null)
-        PAGE_FIX_DELAYS_MS.forEach { delay ->
-            handler.postDelayed({ view.evaluateJavascript(PAGE_FIX_JS, null) }, delay)
-        }
+        webView.loadUrl(url)
     }
 
     @Suppress("DEPRECATION")
@@ -617,7 +529,6 @@ class MainActivity : AppCompatActivity() {
         if (UpdatePreferences.isAutoUpdateEnabled(this)) {
             items.add(SettingsMenuItem.AUTO_UPDATE_TIME)
         }
-        items.add(SettingsMenuItem.WEBVIEW_UPDATE)
         return items
     }
 
@@ -644,11 +555,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             "Время: ${UpdatePreferences.formatCheckTime(this)}"
         }
-        val webViewLine = getString(
-            R.string.webview_menu_line,
-            WebViewSupport.describeCurrentProvider(this)
-        )
-
         settingsMenuText.text = buildString {
             appendLine("Меню")
             appendLine()
@@ -658,7 +564,6 @@ class MainActivity : AppCompatActivity() {
             if (autoEnabled) {
                 appendLine(menuLine(SettingsMenuItem.AUTO_UPDATE_TIME, timeLabel))
             }
-            appendLine(menuLine(SettingsMenuItem.WEBVIEW_UPDATE, webViewLine))
             appendLine()
             append(
                 if (settingsTimeEditing) {
@@ -743,10 +648,6 @@ class MainActivity : AppCompatActivity() {
             SettingsMenuItem.AUTO_UPDATE_TIME -> {
                 settingsTimeEditing = true
                 updateSettingsMenuText()
-            }
-            SettingsMenuItem.WEBVIEW_UPDATE -> {
-                hideSettingsMenu()
-                WebViewSupport.openUpdater(this)
             }
         }
     }
