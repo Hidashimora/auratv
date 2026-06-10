@@ -3,6 +3,7 @@ package com.example.timepray
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
@@ -32,8 +33,10 @@ import android.net.*
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceResponse
+import java.io.ByteArrayInputStream
 import android.widget.TextView
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -53,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "aura_prefs"
         private const val KEY_LAST_URL = "last_success_url"
         private const val KEY_LAST_UPDATE_CHECK_DAY = "last_update_check_day"
+        private const val KEY_LOADED_VERSION_CODE = "loaded_version_code"
         private const val OFFLINE_MESSAGE = "Нет подключения к интернету\nОжидание сети..."
     }
 
@@ -80,6 +84,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settingsMenuText: TextView
     private var settingsMenuVisible = false
     private var settingsMenuSelection = SettingsMenuItem.WIFI
+    private var mainFrameHttpErrorRetried = false
 
     private enum class SettingsMenuItem { WIFI, UPDATE }
 
@@ -124,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         reloadPending = true
         handler.postDelayed({
             if (isOnline) {
-                if (lastUrl.isNotBlank()) webView.loadUrl(lastUrl)
+                if (lastUrl.isNotBlank()) loadWebPage(lastUrl)
                 else webView.reload()
             }
             reloadPending = false
@@ -162,7 +167,12 @@ class MainActivity : AppCompatActivity() {
             @Suppress("DEPRECATION")
             databaseEnabled = true
             cacheMode = WebSettings.LOAD_DEFAULT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                safeBrowsingEnabled = false
+            }
         }
+        webView.setBackgroundColor(Color.TRANSPARENT)
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
 
         // Куки
         CookieManager.getInstance().setAcceptCookie(true)
@@ -280,9 +290,26 @@ class MainActivity : AppCompatActivity() {
                 return false
             }
 
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): WebResourceResponse? {
+                // Service Worker на TV WebView кэширует ошибки и отдаёт пустые ответы — сайт белеет.
+                val path = request?.url?.path.orEmpty()
+                if (path == "/sw.js" || path.endsWith("/sw.js")) {
+                    return WebResourceResponse(
+                        "application/javascript",
+                        "utf-8",
+                        ByteArrayInputStream(ByteArray(0))
+                    )
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) = Unit
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                mainFrameHttpErrorRetried = false
                 if (isOnline) hideOffline() else showOffline()
                 url?.let {
                     lastUrl = it
@@ -297,9 +324,15 @@ class MainActivity : AppCompatActivity() {
             ) {
                 if (request?.isForMainFrame != true) return
                 val code = errorResponse?.statusCode ?: return
-                if (code >= 400) {
-                    runOnUiThread { showPageError("Сайт недоступен (ошибка $code)") }
+                if (code >= 400 && !mainFrameHttpErrorRetried) {
+                    mainFrameHttpErrorRetried = true
+                    runOnUiThread { loadWebPage(homeUrl(), forceNetwork = true) }
                 }
+            }
+
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                view?.reload()
+                return true
             }
 
             override fun onReceivedError(
@@ -412,8 +445,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadWebPage(url: String) {
-        webView.loadUrl(url)
+    private fun browserUserAgent(): String = getString(R.string.app_webview_user_agent)
+
+    private fun browserHeaders(bypassCache: Boolean = false): Map<String, String> {
+        val headers = linkedMapOf(
+            "User-Agent" to browserUserAgent(),
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language" to "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+        )
+        if (bypassCache) {
+            headers["Cache-Control"] = "no-cache"
+            headers["Pragma"] = "no-cache"
+        }
+        return headers
+    }
+
+    private fun shouldBypassCacheForLoad(): Boolean {
+        val loadedVersion = prefs.getInt(KEY_LOADED_VERSION_CODE, -1)
+        if (loadedVersion == BuildConfig.VERSION_CODE) return false
+        prefs.edit().putInt(KEY_LOADED_VERSION_CODE, BuildConfig.VERSION_CODE).apply()
+        return true
+    }
+
+    private fun loadWebPage(url: String, forceNetwork: Boolean = false) {
+        webView.settings.userAgentString = browserUserAgent()
+        val bypass = forceNetwork || shouldBypassCacheForLoad()
+        webView.loadUrl(url, browserHeaders(bypass))
     }
 
     @Suppress("DEPRECATION")
