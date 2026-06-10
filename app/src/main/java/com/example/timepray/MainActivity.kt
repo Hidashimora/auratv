@@ -428,6 +428,7 @@ class MainActivity : AppCompatActivity() {
         webView.settings.cacheMode = cacheMode
         webView.loadUrl(url)
     }
+
     @Suppress("DEPRECATION")
     private fun isLegacyNetworkConnected(): Boolean {
         val ni = cm.activeNetworkInfo

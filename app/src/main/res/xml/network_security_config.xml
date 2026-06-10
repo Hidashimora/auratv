@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">shundi25.ru</domain>
+        <domain includeSubdomains="true">mosque-kit.ru</domain>
     </domain-config>
 </network-security-config>
